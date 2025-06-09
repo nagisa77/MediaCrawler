@@ -590,3 +590,16 @@ alter table douyin_aweme_comment add column `like_count` varchar(255) NOT NULL D
 
 alter table xhs_note add column xsec_token varchar(50) default null comment '签名算法';
 alter table douyin_aweme_comment add column `pictures` varchar(500) NOT NULL DEFAULT '' COMMENT '评论图片列表';
+
+-- ----------------------------
+-- Table structure for interview_question
+-- ----------------------------
+DROP TABLE IF EXISTS `interview_question`;
+CREATE TABLE `interview_question` (
+    `id` int NOT NULL AUTO_INCREMENT COMMENT '自增ID',
+    `question` varchar(512) NOT NULL COMMENT '标准化后的面试题',
+    `sources` longtext NOT NULL COMMENT '来源笔记列表 JSON',
+    `add_ts` bigint NOT NULL COMMENT '添加时间戳',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `idx_interview_question_question` (`question`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='面试题及来源';

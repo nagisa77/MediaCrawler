@@ -21,8 +21,13 @@ import os
 import re
 import sys
 import unicodedata
+import time
+import asyncio
 from collections import defaultdict
 from typing import List, Dict, Any
+
+import aiomysql
+import config
 
 import numpy as np
 from sklearn.cluster import DBSCAN
@@ -46,6 +51,26 @@ client = OpenAI()  # 使用默认的 key / base_url / organization
 MODEL_CHAT = "gpt-3.5-turbo"           # 用于句子精炼
 MODEL_EMBED = "text-embedding-3-small" # 用于向量嵌入（1536维稀释版）
 CLUSTER_EPS = 0.4                      # DBSCAN 半径，可根据效果酌情调整
+
+# 处理过的笔记ID记录文件
+PROCESSED_ID_FILE = "processed_note_ids.json"
+
+
+def load_processed_ids() -> set[str]:
+    """读取已处理的 note_id 集合"""
+    if os.path.exists(PROCESSED_ID_FILE):
+        try:
+            with open(PROCESSED_ID_FILE, "r", encoding="utf-8") as f:
+                return set(json.load(f))
+        except Exception:
+            return set()
+    return set()
+
+
+def save_processed_ids(ids: set[str]) -> None:
+    """保存已处理的 note_id 集合"""
+    with open(PROCESSED_ID_FILE, "w", encoding="utf-8") as f:
+        json.dump(sorted(ids), f, ensure_ascii=False, indent=2)
 
 # -------------------- 1. 预处理：提取候选问题 --------------------
 """
@@ -231,6 +256,9 @@ def build_qa(notes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             canon_q = canon_map[q]  # 该问题所属的canonical
             if canon_q not in qa_dict:
                 qa_dict[canon_q] = make_empty_qa(canon_q)
+            existing_ids = {src["note_id"] for src in qa_dict[canon_q]["sources"]}
+            if note["note_id"] in existing_ids:
+                continue
             qa_dict[canon_q]["sources"].append({
                 "note_id": note["note_id"],
                 "type": note.get("type", ""),
@@ -257,24 +285,77 @@ def build_qa(notes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     # 转成 list
     return list(qa_dict.values())
 
+
+async def store_to_db(qa_items: List[Dict[str, Any]]) -> None:
+    """将 Q&A 结果保存到数据库"""
+    pool = await aiomysql.create_pool(
+        host=config.RELATION_DB_HOST,
+        port=config.RELATION_DB_PORT,
+        user=config.RELATION_DB_USER,
+        password=config.RELATION_DB_PWD,
+        db=config.RELATION_DB_NAME,
+        autocommit=True,
+    )
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            for item in qa_items:
+                sql = (
+                    "INSERT INTO interview_question(question, sources, add_ts) "
+                    "VALUES (%s, %s, %s) "
+                    "ON DUPLICATE KEY UPDATE sources=VALUES(sources), add_ts=VALUES(add_ts)"
+                )
+                await cur.execute(
+                    sql,
+                    (
+                        item["question"],
+                        json.dumps(item["sources"], ensure_ascii=False),
+                        int(time.time() * 1000),
+                    ),
+                )
+    pool.close()
+    await pool.wait_closed()
+
 # -------------------- 5. CLI 入口 --------------------
 
 def main() -> None:
-    if len(sys.argv) != 3:
-        print("Usage: python xhs_interview_cleaner.py <input_notes.json> <output_qas.json>")
+    if len(sys.argv) < 3:
+        print(
+            "Usage: python xhs_interview_cleaner.py <input_notes.json> <output_qas.json> [--db]"
+        )
         sys.exit(1)
 
     in_path, out_path = sys.argv[1], sys.argv[2]
+    enable_db = len(sys.argv) > 3 and sys.argv[3] == "--db"
 
     with open(in_path, "r", encoding="utf-8") as f:
         notes = json.load(f)
         if not isinstance(notes, list):
             raise ValueError("输入 JSON 须为数组！")
 
-    qa_json = build_qa(notes)
+    processed_ids = load_processed_ids()
+    unique_notes = []
+    new_ids = set()
+    for note in notes:
+        nid = note.get("note_id")
+        if not nid or nid in processed_ids or nid in new_ids:
+            continue
+        new_ids.add(nid)
+        unique_notes.append(note)
+
+    if not unique_notes:
+        print("No new notes to process.")
+        return
+
+    qa_json = build_qa(unique_notes)
 
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(qa_json, f, ensure_ascii=False, indent=2)
+
+    processed_ids.update(new_ids)
+    save_processed_ids(processed_ids)
+
+    if enable_db:
+        asyncio.run(store_to_db(qa_json))
 
     print(f"✅ 生成 {len(qa_json)} 条 Q&A，写入 → {out_path}")
 
