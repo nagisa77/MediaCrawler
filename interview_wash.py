@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""xhs_interview_cleaner.py
+# -*- coding: utf-8 -*-
+"""
+xhs_interview_cleaner.py
 
 洗小红书面试笔记 desc → 结构化 Q&A JSON（兼容 openai>=1.0.0 新 SDK）
 --------------------------------------------------------------------------
-$ export OPENAI_API_KEY="sk-..."
-$ python xhs_interview_cleaner.py raw_notes.json cleaned_qas.json
+
+用法：
+  $ export OPENAI_API_KEY="sk-..."
+  $ python xhs_interview_cleaner.py raw_notes.json cleaned_qas.json
 
 依赖：
-  pip install openai>=1.0 numpy scikit-learn tqdm
+  pip install --upgrade openai>=1.0 numpy scikit-learn tqdm
 """
 
 from __future__ import annotations
@@ -27,127 +31,240 @@ from tqdm import tqdm
 # -------------------- OpenAI 新 SDK --------------------
 try:
     from openai import OpenAI  # >=1.0.0
-except ImportError as exc:  # 旧版本未安装
+except ImportError as exc:
     raise RuntimeError(
-        "❌ 未检测到 openai>=1.0.0，请先执行 `pip install --upgrade openai`"  # noqa: E501
+        "❌ 未检测到 openai>=1.0.0，请先执行 `pip install --upgrade openai`"
     ) from exc
 
+# 检查环境变量
 if not os.getenv("OPENAI_API_KEY"):
     raise RuntimeError("❌ 请先 export OPENAI_API_KEY=sk-...")
 
-client = OpenAI()  # 使用默认 key / base_url / organization
+client = OpenAI()  # 使用默认的 key / base_url / organization
 
 # -------------------- 配置 --------------------
-MODEL_CHAT = "gpt-3.5-turbo"          # 精炼句子
-MODEL_EMBED = "text-embedding-3-small"  # 1536 维稀释版
+MODEL_CHAT = "gpt-3.5-turbo"           # 用于句子精炼
+MODEL_EMBED = "text-embedding-3-small" # 用于向量嵌入（1536维稀释版）
+CLUSTER_EPS = 0.4                      # DBSCAN 半径，可根据效果酌情调整
 
-# -------------------- 1. 预处理 --------------------
-_SANITIZE_RE = re.compile(r"[^\u4e00-\u9fa5A-Za-z0-9#@/\\.\+:\-()？? ]+")
+# -------------------- 1. 预处理：提取候选问题 --------------------
+"""
+原先的正则 _QUESTION_CANDIDATE_RE 要求：
+  (?:^|[\n\r])        # 行首或换行
+  (?:[0-9]{0,2}[️⃣①②③④⑤⑥⑦⑧⑨]?)  # 序号
+  ([^?？\n\r]{4,60})  # 4~60个非问号字符
+  [?？]
+限制性太强，很多带问号的句子可能无法匹配。
+
+改为更宽松的：
+  ([\S ]{4,100})[?？]
+表示至少4个非换行字符（包括空格）+ 问号，最多100，防止过长无意义。
+可根据实际情况继续微调。
+"""
 _QUESTION_CANDIDATE_RE = re.compile(
-    r"(?:^|[\n\r])"          # 行首或换行
-    r"(?:[0-9]{0,2}[️⃣①②③④⑤⑥⑦⑧⑨]?)"  # 序号
-    r"([^?？\n\r]{4,60})"    # 题干
-    r"[?？]"                   # 问号
+    r"([\S ]{4,100})[?？]"
 )
-
 
 def normalize(text: str) -> str:
-    text = unicodedata.normalize("NFKC", text)
-    return _SANITIZE_RE.sub("", text)
-
+    """统一全角半角并过滤掉一些特殊符号。"""
+    text = unicodedata.normalize("NFKC", text)  # 转换全角到半角等
+    # 你可以根据需要删掉一些不想要的符号，这里只是示例
+    # 保留汉字、字母、数字、常见标点等
+    text = re.sub(r"[^\u4e00-\u9fa5A-Za-z0-9#@/\.\+:\-\(\)（）？? ]+", "", text)
+    return text
 
 def extract_candidates(desc: str) -> List[str]:
+    """从笔记描述中提取所有可能问题的候选句子。"""
     desc_norm = normalize(desc)
-    return [m.group(1).strip() + "?" for m in _QUESTION_CANDIDATE_RE.finditer(desc_norm)]
+    # 用更宽松的正则搜索所有包含问号的短语
+    cands = [m.group(1).strip() + "?" for m in _QUESTION_CANDIDATE_RE.finditer(desc_norm)]
+    # 去重
+    return list(dict.fromkeys(cands))
 
-# -------------------- 2. 句子精炼 --------------------
+# -------------------- 2. 句子精炼 (Chat GPT) --------------------
+"""
+思路：让 GPT 判断哪些候选是真正的"面试题"；并对题干做一些精炼处理。
+如果 GPT 判定不是题，则输出空行，判定是题就输出 "Q: <精炼题干>"。
+"""
+
 _SYSTEM_PROMPT = (
-    "你是一名资深 Java 后端面试官。\n"
-    "- 输入是一组句子，可能是面试题，也可能只是描述。\n"
-    "- 对于每个句子：如果它是完整面试题，输出 `Q: <精炼题干>`；否则输出空行。\n"
-    "- 题干需书面化，结尾保留问号。"
+    "你是一名资深后端面试官。\n"
+    "- 输入是一组可能是面试题的句子（含问号）。\n"
+    "- 你需要判断它是不是完整、可作为面试问题的句子。\n"
+    "- 对于每个句子：如果它是一个清晰、可答的面试题，输出 `Q: <精炼题干>`；否则输出空行。\n"
+    "- 题干需保持问句形式，并且语义完整、简洁。\n"
+    "只输出处理结果，不要添加额外解释。\n"
 )
 
-
 def refine_questions(candidates: List[str]) -> List[str]:
+    """调用 GPT 对候选句子进行判定和精炼，返回精炼后的面试题列表。"""
     if not candidates:
         return []
+    # 将所有候选句拼成一段
+    # 每行一个
+    user_text = "\n".join(candidates)
 
     resp = client.chat.completions.create(
         model=MODEL_CHAT,
         messages=[
             {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": "\n".join(candidates)},
+            {"role": "user", "content": user_text},
         ],
         temperature=0,
     )
-    refined: List[str] = []
-    for line in resp.choices[0].message.content.splitlines():
+    # 拆分 GPT 返回
+    lines = resp.choices[0].message.content.splitlines()
+    # 只取带 "Q:" 的行
+    refined = []
+    for line in lines:
+        line = line.strip()
         if line.startswith("Q:"):
-            refined.append(line[2:].strip())
+            refined_text = line[2:].strip()
+            # 避免空题
+            if refined_text:
+                refined.append(refined_text)
     return refined
 
-# -------------------- 3. 语义聚类 --------------------
+# -------------------- 3. 语义聚类 (DBSCAN) --------------------
+"""
+对于提炼后的面试题，我们用 OpenAI Embedding 得到向量，然后用 DBSCAN 根据余弦距离聚类。
+同一个簇里的问题被视为“同义或高度相似”。
+"""
 
 def get_embedding(text: str) -> List[float]:
-    return client.embeddings.create(model=MODEL_EMBED, input=text).data[0].embedding
+    """获取文本的向量表示。"""
+    emb_resp = client.embeddings.create(model=MODEL_EMBED, input=text)
+    return emb_resp.data[0].embedding
 
-
-def cluster_questions(questions: List[str], eps: float = 0.4) -> Dict[str, str]:
+def cluster_questions(questions: List[str], eps: float = CLUSTER_EPS) -> Dict[str, str]:
+    """
+    返回一个映射：原始问题 -> 簇代表(即canonical question)。
+    同簇问题都指向同一个代表。
+    每簇选用最短的一句做代表。
+    """
     if not questions:
         return {}
 
-    vecs = np.array([get_embedding(q) for q in tqdm(questions, desc="Embedding")])
+    # 计算 embeddings
+    vecs = []
+    for q in tqdm(questions, desc="Embedding"):
+        vec = get_embedding(q)
+        vecs.append(vec)
+    vecs = np.array(vecs)
+
+    # 余弦距离  => DBSCAN metric='cosine'
+    # eps 可调；越大合并越多
     labels = DBSCAN(eps=eps, min_samples=1, metric="cosine").fit_predict(vecs)
 
     clusters: Dict[int, List[str]] = defaultdict(list)
     for q, lbl in zip(questions, labels):
-        clusters[int(lbl)].append(q)
+        clusters[lbl].append(q)
 
-    # 每簇用最短一句作代表
+    # 每个簇里选用最短文本作为canonical
     canon_map: Dict[str, str] = {}
-    for qs in clusters.values():
-        rep = min(qs, key=len)
-        for q in qs:
+    for q_list in clusters.values():
+        rep = min(q_list, key=len)
+        for q in q_list:
             canon_map[q] = rep
     return canon_map
 
-# -------------------- 4. 构建最终 Q&A --------------------
+# -------------------- 4. 构建最终 Q&A 结构 --------------------
+"""
+最终我们需要:
+[
+  {
+    "question": "某个canonical question",
+    "sources": [
+      {
+         ... note1 的信息 ...
+      },
+      {
+         ... note2 的信息 ...
+      }
+    ]
+  },
+  ...
+]
+"""
 
 def build_qa(notes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    核心流程：
+      1) 从每个 note.desc 中提取候选问题
+      2) 用 GPT refine
+      3) 全部问题一起做聚类
+      4) 按簇合并来源
+    """
+    # 1) 收集所有候选
     note_to_candidates: Dict[str, List[str]] = {}
     for note in notes:
-        note_to_candidates[note["note_id"]] = extract_candidates(note.get("desc", ""))
+        desc = note.get("desc", "")
+        cands = extract_candidates(desc)
+        note_to_candidates[note["note_id"]] = cands
 
-    # 精炼
+    # 2) 精炼
     note_to_refined: Dict[str, List[str]] = {}
     all_refined: List[str] = []
-    for nid, cands in tqdm(note_to_candidates.items(), desc="Refine", total=len(note_to_candidates)):
-        refined = refine_questions(cands)
+    all_candidate_count = 0
+
+    for nid, cands in tqdm(note_to_candidates.items(), desc="Refine"):
+        refined = refine_questions(cands)  # GPT 判断+精炼
         note_to_refined[nid] = refined
         all_refined.extend(refined)
+        all_candidate_count += len(cands)
 
-    # 聚类
+    print(f"总共从 desc 中匹配到 {all_candidate_count} 个带问号短语，经 GPT 判定得到 {len(all_refined)} 个有效问题。")
+
+    # 3) 聚类
     canon_map = cluster_questions(all_refined)
 
-    # 组装
-    qa: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"question": "", "sources": []})
+    # 4) 组装
+    #   由于同个问题(簇代表)会出现在多个笔记中，所以需要把 note 汇总到同一个 key 里
+    qa_dict: Dict[str, Dict[str, Any]] = {}
+
+    def make_empty_qa(q: str) -> Dict[str, Any]:
+        return {"question": q, "sources": []}
+
     for note in notes:
-        for q in note_to_refined[note["note_id"]]:
-            canon_q = canon_map[q]
-            qa[canon_q]["question"] = canon_q
-            qa[canon_q]["sources"].append(note)
+        refined_in_note = note_to_refined[note["note_id"]]
+        for q in refined_in_note:
+            canon_q = canon_map[q]  # 该问题所属的canonical
+            if canon_q not in qa_dict:
+                qa_dict[canon_q] = make_empty_qa(canon_q)
+            qa_dict[canon_q]["sources"].append({
+                "note_id": note["note_id"],
+                "type": note.get("type", ""),
+                "video_url": note.get("video_url", ""),
+                "time": note.get("time", 0),
+                "last_update_time": note.get("last_update_time", 0),
+                "user_id": note.get("user_id", ""),
+                "nickname": note.get("nickname", ""),
+                "avatar": note.get("avatar", ""),
+                "liked_count": note.get("liked_count", ""),
+                "collected_count": note.get("collected_count", ""),
+                "comment_count": note.get("comment_count", ""),
+                "share_count": note.get("share_count", ""),
+                "ip_location": note.get("ip_location", ""),
+                "image_list": note.get("image_list", ""),
+                "tag_list": note.get("tag_list", ""),
+                "last_modify_ts": note.get("last_modify_ts", 0),
+                "note_url": note.get("note_url", ""),
+                "source_keyword": note.get("source_keyword", ""),
+                "xsec_token": note.get("xsec_token", ""),
+                "desc": note.get("desc", ""),
+            })
 
-    return list(qa.values())
+    # 转成 list
+    return list(qa_dict.values())
 
-# -------------------- 5. CLI --------------------
+# -------------------- 5. CLI 入口 --------------------
 
 def main() -> None:
     if len(sys.argv) != 3:
         print("Usage: python xhs_interview_cleaner.py <input_notes.json> <output_qas.json>")
         sys.exit(1)
 
-    in_path, out_path = sys.argv[1:3]
+    in_path, out_path = sys.argv[1], sys.argv[2]
 
     with open(in_path, "r", encoding="utf-8") as f:
         notes = json.load(f)
@@ -159,7 +276,7 @@ def main() -> None:
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(qa_json, f, ensure_ascii=False, indent=2)
 
-    print(f"✅ {len(qa_json)} Q&A written → {out_path}")
+    print(f"✅ 生成 {len(qa_json)} 条 Q&A，写入 → {out_path}")
 
 
 if __name__ == "__main__":
