@@ -315,22 +315,46 @@ async def store_to_db(qa_items: List[Dict[str, Any]]) -> None:
     pool.close()
     await pool.wait_closed()
 
+
+async def load_notes_from_db() -> List[Dict[str, Any]]:
+    """从数据库加载待处理的笔记信息"""
+    pool = await aiomysql.create_pool(
+        host=config.RELATION_DB_HOST,
+        port=config.RELATION_DB_PORT,
+        user=config.RELATION_DB_USER,
+        password=config.RELATION_DB_PWD,
+        db=config.RELATION_DB_NAME,
+        autocommit=True,
+    )
+    async with pool.acquire() as conn:
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            await cur.execute("SELECT * FROM xhs_note")
+            rows = await cur.fetchall()
+    pool.close()
+    await pool.wait_closed()
+    return list(rows)
+
 # -------------------- 5. CLI 入口 --------------------
 
 def main() -> None:
-    if len(sys.argv) < 3:
-        print(
-            "Usage: python xhs_interview_cleaner.py <input_notes.json> <output_qas.json> [--db]"
-        )
-        sys.exit(1)
+    if config.SAVE_DATA_OPTION == "db":
+        notes = asyncio.run(load_notes_from_db())
+        out_path = ""
+        enable_db = True
+    else:
+        if len(sys.argv) < 3:
+            print(
+                "Usage: python xhs_interview_cleaner.py <input_notes.json> <output_qas.json> [--db]"
+            )
+            sys.exit(1)
 
-    in_path, out_path = sys.argv[1], sys.argv[2]
-    enable_db = len(sys.argv) > 3 and sys.argv[3] == "--db"
+        in_path, out_path = sys.argv[1], sys.argv[2]
+        enable_db = len(sys.argv) > 3 and sys.argv[3] == "--db"
 
-    with open(in_path, "r", encoding="utf-8") as f:
-        notes = json.load(f)
-        if not isinstance(notes, list):
-            raise ValueError("输入 JSON 须为数组！")
+        with open(in_path, "r", encoding="utf-8") as f:
+            notes = json.load(f)
+            if not isinstance(notes, list):
+                raise ValueError("输入 JSON 须为数组！")
 
     processed_ids = load_processed_ids()
     unique_notes = []
@@ -348,8 +372,9 @@ def main() -> None:
 
     qa_json = build_qa(unique_notes)
 
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(qa_json, f, ensure_ascii=False, indent=2)
+    if config.SAVE_DATA_OPTION != "db":
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(qa_json, f, ensure_ascii=False, indent=2)
 
     processed_ids.update(new_ids)
     save_processed_ids(processed_ids)
@@ -357,7 +382,10 @@ def main() -> None:
     if enable_db:
         asyncio.run(store_to_db(qa_json))
 
-    print(f"✅ 生成 {len(qa_json)} 条 Q&A，写入 → {out_path}")
+    if config.SAVE_DATA_OPTION == "db":
+        print(f"✅ 生成 {len(qa_json)} 条 Q&A，已写入数据库")
+    else:
+        print(f"✅ 生成 {len(qa_json)} 条 Q&A，写入 → {out_path}")
 
 
 if __name__ == "__main__":
