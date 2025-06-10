@@ -290,7 +290,7 @@ def build_qa(notes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 async def store_to_db(qa_items: List[Dict[str, Any]]) -> None:
-    """将 Q&A 结果保存到数据库"""
+    """将 Q&A 结果保存到数据库，若问题已存在则合并来源"""
     pool = await aiomysql.create_pool(
         host=config.RELATION_DB_HOST,
         port=config.RELATION_DB_PORT,
@@ -300,24 +300,46 @@ async def store_to_db(qa_items: List[Dict[str, Any]]) -> None:
         autocommit=True,
     )
     async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
+        async with conn.cursor(aiomysql.DictCursor) as cur:
             for item in qa_items:
-                sql = (
-                    "INSERT INTO interview_question(question, sources, add_ts) "
-                    "VALUES (%s, %s, %s) "
-                    "ON DUPLICATE KEY UPDATE sources=VALUES(sources), add_ts=VALUES(add_ts)"
-                )
                 question = item["question"]
                 if len(question) > QUESTION_MAX_LEN:
                     question = question[:QUESTION_MAX_LEN]
+
+                # 查询是否已有该问题
                 await cur.execute(
-                    sql,
-                    (
-                        question,
-                        json.dumps(item["sources"], ensure_ascii=False),
-                        int(time.time() * 1000),
-                    ),
+                    "SELECT sources FROM interview_question WHERE question=%s",
+                    (question,),
                 )
+                row = await cur.fetchone()
+
+                if row:
+                    try:
+                        existing_sources = json.loads(row.get("sources", "[]"))
+                    except Exception:
+                        existing_sources = []
+                    # 按 note_id 去重合并新旧来源
+                    merged = {src.get("note_id"): src for src in existing_sources}
+                    for src in item["sources"]:
+                        merged[src.get("note_id")] = src
+                    merged_sources = list(merged.values())
+                    await cur.execute(
+                        "UPDATE interview_question SET sources=%s, add_ts=%s WHERE question=%s",
+                        (
+                            json.dumps(merged_sources, ensure_ascii=False),
+                            int(time.time() * 1000),
+                            question,
+                        ),
+                    )
+                else:
+                    await cur.execute(
+                        "INSERT INTO interview_question(question, sources, add_ts) VALUES (%s, %s, %s)",
+                        (
+                            question,
+                            json.dumps(item["sources"], ensure_ascii=False),
+                            int(time.time() * 1000),
+                        ),
+                    )
     pool.close()
     await pool.wait_closed()
 
