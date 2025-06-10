@@ -344,6 +344,109 @@ async def store_to_db(qa_items: List[Dict[str, Any]]) -> None:
     await pool.wait_closed()
 
 
+async def merge_existing_questions() -> None:
+    """按语义合并数据库中已存在的面试题，合并其来源列表"""
+    pool = await aiomysql.create_pool(
+        host=config.RELATION_DB_HOST,
+        port=config.RELATION_DB_PORT,
+        user=config.RELATION_DB_USER,
+        password=config.RELATION_DB_PWD,
+        db=config.RELATION_DB_NAME,
+        autocommit=True,
+    )
+
+    async with pool.acquire() as conn:
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            await cur.execute("SELECT id, question, sources FROM interview_question")
+            rows = await cur.fetchall()
+
+            if not rows:
+                pool.close()
+                await pool.wait_closed()
+                return
+
+            questions = [row["question"] for row in rows]
+            canon_map = cluster_questions(questions)
+
+            clusters: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+            for row in rows:
+                canon = canon_map[row["question"]]
+                clusters[canon].append(row)
+
+            for canon_q, items in clusters.items():
+                merged: Dict[str, Any] = {}
+                rep_id = None
+                for row in items:
+                    try:
+                        src_list = json.loads(row.get("sources", "[]"))
+                    except Exception:
+                        src_list = []
+                    for src in src_list:
+                        merged[src.get("note_id")] = src
+                    if row["question"] == canon_q:
+                        rep_id = row["id"]
+
+                if rep_id is None:
+                    rep_id = items[0]["id"]
+                    await cur.execute(
+                        "UPDATE interview_question SET question=%s WHERE id=%s",
+                        (canon_q, rep_id),
+                    )
+
+                merged_sources = list(merged.values())
+                await cur.execute(
+                    "UPDATE interview_question SET sources=%s, add_ts=%s WHERE id=%s",
+                    (
+                        json.dumps(merged_sources, ensure_ascii=False),
+                        int(time.time() * 1000),
+                        rep_id,
+                    ),
+                )
+
+                for row in items:
+                    if row["id"] != rep_id:
+                        await cur.execute(
+                            "DELETE FROM interview_question WHERE id=%s",
+                            (row["id"],),
+                        )
+
+    pool.close()
+    await pool.wait_closed()
+
+
+async def analyze_questions() -> None:
+    """简单统计数据库中的问题数量并按来源数量排序输出前5"""
+    pool = await aiomysql.create_pool(
+        host=config.RELATION_DB_HOST,
+        port=config.RELATION_DB_PORT,
+        user=config.RELATION_DB_USER,
+        password=config.RELATION_DB_PWD,
+        db=config.RELATION_DB_NAME,
+        autocommit=True,
+    )
+
+    async with pool.acquire() as conn:
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            await cur.execute("SELECT question, sources FROM interview_question")
+            rows = await cur.fetchall()
+
+    pool.close()
+    await pool.wait_closed()
+
+    stats = []
+    for row in rows:
+        try:
+            srcs = json.loads(row.get("sources", "[]"))
+        except Exception:
+            srcs = []
+        stats.append((row["question"], len(srcs)))
+
+    stats.sort(key=lambda x: x[1], reverse=True)
+    print("Top questions by sources:")
+    for q, cnt in stats[:5]:
+        print(f"{cnt}× {q}")
+
+
 async def load_notes_from_db() -> List[Dict[str, Any]]:
     """从数据库加载待处理的笔记信息"""
     pool = await aiomysql.create_pool(
@@ -409,6 +512,10 @@ def main() -> None:
 
     if enable_db:
         asyncio.run(store_to_db(qa_json))
+        if config.ENABLE_MERGE_INTERVIEW_QUESTIONS:
+            asyncio.run(merge_existing_questions())
+        if config.ENABLE_ANALYZE_INTERVIEW_QUESTIONS:
+            asyncio.run(analyze_questions())
 
     if config.SAVE_DATA_OPTION == "db":
         print(f"✅ 生成 {len(qa_json)} 条 Q&A，已写入数据库")
