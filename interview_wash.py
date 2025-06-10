@@ -52,6 +52,9 @@ MODEL_CHAT = "gpt-3.5-turbo"           # 用于句子精炼
 MODEL_EMBED = "text-embedding-3-small" # 用于向量嵌入（1536维稀释版）
 CLUSTER_EPS = 0.4                      # DBSCAN 半径，可根据效果酌情调整
 
+# 数据库中 question 字段允许的最大长度（schema 中为 varchar(512)）
+QUESTION_MAX_LEN = 512
+
 # 处理过的笔记ID记录文件
 PROCESSED_ID_FILE = "processed_note_ids.json"
 
@@ -73,7 +76,7 @@ def save_processed_ids(ids: set[str]) -> None:
         json.dump(sorted(ids), f, ensure_ascii=False, indent=2)
 
 # -------------------- 1. 预处理：提取候选问题 --------------------
-"""
+r"""
 原先的正则 _QUESTION_CANDIDATE_RE 要求：
   (?:^|[\n\r])        # 行首或换行
   (?:[0-9]{0,2}[️⃣①②③④⑤⑥⑦⑧⑨]?)  # 序号
@@ -304,10 +307,13 @@ async def store_to_db(qa_items: List[Dict[str, Any]]) -> None:
                     "VALUES (%s, %s, %s) "
                     "ON DUPLICATE KEY UPDATE sources=VALUES(sources), add_ts=VALUES(add_ts)"
                 )
+                question = item["question"]
+                if len(question) > QUESTION_MAX_LEN:
+                    question = question[:QUESTION_MAX_LEN]
                 await cur.execute(
                     sql,
                     (
-                        item["question"],
+                        question,
                         json.dumps(item["sources"], ensure_ascii=False),
                         int(time.time() * 1000),
                     ),
