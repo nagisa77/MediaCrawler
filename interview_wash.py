@@ -251,7 +251,7 @@ def build_qa(notes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     qa_dict: Dict[str, Dict[str, Any]] = {}
 
     def make_empty_qa(q: str) -> Dict[str, Any]:
-        return {"question": q, "sources": [], "categories": config.CATEGORIES}
+        return {"question": q, "sources": [], "categories": []}
 
     for note in notes:
         refined_in_note = note_to_refined[note["note_id"]]
@@ -284,6 +284,19 @@ def build_qa(notes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "xsec_token": note.get("xsec_token", ""),
                 "desc": note.get("desc", ""),
             })
+            # 合并分类
+            note_categories = []
+            raw_cat = note.get("categories", [])
+            if isinstance(raw_cat, str):
+                try:
+                    note_categories = json.loads(raw_cat)
+                except Exception:
+                    note_categories = [c for c in raw_cat.split(",") if c]
+            elif isinstance(raw_cat, list):
+                note_categories = raw_cat
+            qa_dict[canon_q]["categories"] = list(
+                dict.fromkeys(qa_dict[canon_q]["categories"] + note_categories)
+            )
 
     # 转成 list
     return list(qa_dict.values())
