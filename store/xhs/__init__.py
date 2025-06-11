@@ -14,6 +14,7 @@
 # @Time    : 2024/1/14 17:34
 # @Desc    :
 from typing import List
+import json
 
 import config
 from var import source_keyword_var
@@ -108,6 +109,7 @@ async def update_xhs_note(note_item: Dict):
         "note_url": f"https://www.xiaohongshu.com/explore/{note_id}?xsec_token={note_item.get('xsec_token')}&xsec_source=pc_search", # 帖子url
         "source_keyword": source_keyword_var.get(), # 搜索关键词
         "xsec_token": note_item.get("xsec_token"), # xsec_token
+        "categories": json.dumps(config.CATEGORIES, ensure_ascii=False),
     }
     utils.logger.info(f"[store.xhs.update_xhs_note] xhs note: {local_db_item}")
     await XhsStoreFactory.create_store().store_content(local_db_item)
