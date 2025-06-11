@@ -251,7 +251,7 @@ def build_qa(notes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     qa_dict: Dict[str, Dict[str, Any]] = {}
 
     def make_empty_qa(q: str) -> Dict[str, Any]:
-        return {"question": q, "sources": []}
+        return {"question": q, "sources": [], "categories": config.CATEGORIES}
 
     for note in notes:
         refined_in_note = note_to_refined[note["note_id"]]
@@ -308,7 +308,7 @@ async def store_to_db(qa_items: List[Dict[str, Any]]) -> None:
 
                 # 查询是否已有该问题
                 await cur.execute(
-                    "SELECT sources FROM interview_question WHERE question=%s",
+                    "SELECT sources, categories FROM interview_question WHERE question=%s",
                     (question,),
                 )
                 row = await cur.fetchone()
@@ -318,25 +318,32 @@ async def store_to_db(qa_items: List[Dict[str, Any]]) -> None:
                         existing_sources = json.loads(row.get("sources", "[]"))
                     except Exception:
                         existing_sources = []
+                    try:
+                        existing_categories = json.loads(row.get("categories", "[]"))
+                    except Exception:
+                        existing_categories = []
                     # 按 note_id 去重合并新旧来源
                     merged = {src.get("note_id"): src for src in existing_sources}
                     for src in item["sources"]:
                         merged[src.get("note_id")] = src
                     merged_sources = list(merged.values())
+                    merged_categories = list(dict.fromkeys(existing_categories + item.get("categories", [])))
                     await cur.execute(
-                        "UPDATE interview_question SET sources=%s, add_ts=%s WHERE question=%s",
+                        "UPDATE interview_question SET sources=%s, categories=%s, add_ts=%s WHERE question=%s",
                         (
                             json.dumps(merged_sources, ensure_ascii=False),
+                            json.dumps(merged_categories, ensure_ascii=False),
                             int(time.time() * 1000),
                             question,
                         ),
                     )
                 else:
                     await cur.execute(
-                        "INSERT INTO interview_question(question, sources, add_ts) VALUES (%s, %s, %s)",
+                        "INSERT INTO interview_question(question, sources, categories, add_ts) VALUES (%s, %s, %s, %s)",
                         (
                             question,
                             json.dumps(item["sources"], ensure_ascii=False),
+                            json.dumps(item.get("categories", []), ensure_ascii=False),
                             int(time.time() * 1000),
                         ),
                     )
@@ -357,7 +364,7 @@ async def merge_existing_questions() -> None:
 
     async with pool.acquire() as conn:
         async with conn.cursor(aiomysql.DictCursor) as cur:
-            await cur.execute("SELECT id, question, sources FROM interview_question")
+            await cur.execute("SELECT id, question, sources, categories FROM interview_question")
             rows = await cur.fetchall()
 
             if not rows:
@@ -375,14 +382,20 @@ async def merge_existing_questions() -> None:
 
             for canon_q, items in clusters.items():
                 merged: Dict[str, Any] = {}
+                merged_categories_set: set[str] = set()
                 rep_id = None
                 for row in items:
                     try:
                         src_list = json.loads(row.get("sources", "[]"))
                     except Exception:
                         src_list = []
+                    try:
+                        cat_list = json.loads(row.get("categories", "[]"))
+                    except Exception:
+                        cat_list = []
                     for src in src_list:
                         merged[src.get("note_id")] = src
+                    merged_categories_set.update(cat_list)
                     if row["question"] == canon_q:
                         rep_id = row["id"]
 
@@ -395,9 +408,10 @@ async def merge_existing_questions() -> None:
 
                 merged_sources = list(merged.values())
                 await cur.execute(
-                    "UPDATE interview_question SET sources=%s, add_ts=%s WHERE id=%s",
+                    "UPDATE interview_question SET sources=%s, categories=%s, add_ts=%s WHERE id=%s",
                     (
                         json.dumps(merged_sources, ensure_ascii=False),
+                        json.dumps(list(merged_categories_set), ensure_ascii=False),
                         int(time.time() * 1000),
                         rep_id,
                     ),

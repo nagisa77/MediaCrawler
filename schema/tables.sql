@@ -599,6 +599,7 @@ CREATE TABLE `interview_question` (
     `id` int NOT NULL AUTO_INCREMENT COMMENT '自增ID',
     `question` varchar(512) NOT NULL COMMENT '标准化后的面试题',
     `sources` longtext NOT NULL COMMENT '来源笔记列表 JSON',
+    `categories` JSON NOT NULL COMMENT '分类列表',
     `add_ts` bigint NOT NULL COMMENT '添加时间戳',
     PRIMARY KEY (`id`),
     UNIQUE KEY `idx_interview_question_question` (`question`)
