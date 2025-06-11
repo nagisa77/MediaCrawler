@@ -12,6 +12,8 @@
 # 基础配置
 PLATFORM = "xhs"
 KEYWORDS = "腾讯后台面试经验,Tencent backend interview experience,腾讯后台面试,腾讯 后台 面经,腾讯后台面经"  # 关键词搜索配置，以英文逗号分隔
+# 当前搜索所属的分类列表，可在面试题入库时一并保存
+CATEGORIES = []
 LOGIN_TYPE = "qrcode"  # qrcode or phone or cookie
 COOKIES = ""
 # 具体值参见media_platform.xxx.field下的枚举值，暂时只支持小红书
