@@ -497,9 +497,9 @@ def main() -> None:
         new_ids.add(nid)
         unique_notes.append(note)
 
-    if not unique_notes:
-        print("No new notes to process.")
-        return
+    # if not unique_notes:
+    #     print("No new notes to process.")
+    #     return
 
     qa_json = build_qa(unique_notes)
 
