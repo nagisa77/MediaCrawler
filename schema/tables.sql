@@ -356,6 +356,7 @@ CREATE TABLE `xhs_note`
     `share_count`      varchar(16)  DEFAULT NULL COMMENT '笔记分享数',
     `image_list`       longtext COMMENT '笔记封面图片列表',
     `tag_list`         longtext COMMENT '标签列表',
+    `categories`       json NOT NULL COMMENT '分类列表',
     `note_url`         varchar(255) DEFAULT NULL COMMENT '笔记详情页的URL',
     PRIMARY KEY (`id`),
     KEY                `idx_xhs_note_note_id_209457` (`note_id`),
