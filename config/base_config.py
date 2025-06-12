@@ -11,9 +11,9 @@
 
 # 基础配置
 PLATFORM = "xhs"
-KEYWORDS = "美团后台面试经验,Meituan backend interview experience,美团后台面试,美团 后台 面经,美团后台面经"  # 关键词搜索配置，以英文逗号分隔
+KEYWORDS = "腾讯前端面试经验,Tencent frontend interview experience,腾讯前端面试,腾讯 前端 面经,腾讯前端面经"  # 关键词搜索配置，以英文逗号分隔
 # 当前搜索所属的分类列表，可在面试题入库时一并保存
-CATEGORIES = ['美团','后台']
+CATEGORIES = ['腾讯','前端']
 LOGIN_TYPE = "qrcode"  # qrcode or phone or cookie
 COOKIES = ""
 # 具体值参见media_platform.xxx.field下的枚举值，暂时只支持小红书
@@ -211,6 +211,6 @@ CRAWLER_MAX_CONTACTS_COUNT_SINGLENOTES = 100
 CRAWLER_MAX_DYNAMICS_COUNT_SINGLENOTES = 50
 
 # interview_wash 相关配置
-ENABLE_MERGE_INTERVIEW_QUESTIONS = True
+ENABLE_MERGE_INTERVIEW_QUESTIONS = False
 # 是否在合并后执行问题分析
-ENABLE_ANALYZE_INTERVIEW_QUESTIONS = False
+ENABLE_ANALYZE_INTERVIEW_QUESTIONS = True

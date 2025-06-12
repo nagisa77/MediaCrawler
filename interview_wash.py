@@ -518,7 +518,7 @@ async def analyze_questions() -> None:
 
     stats.sort(key=lambda x: x[1], reverse=True)
     print("Top questions by sources:")
-    for q, cnt in stats[:5]:
+    for q, cnt in stats[:20]:
         print(f"{cnt}× {q}")
 
 
