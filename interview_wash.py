@@ -55,12 +55,34 @@ CLUSTER_EPS = 0.4                      # DBSCAN 半径，可根据效果酌情�
 # 数据库中 question 字段允许的最大长度（schema 中为 varchar(512)）
 QUESTION_MAX_LEN = 512
 
-# 处理过的笔记ID记录文件
-PROCESSED_ID_FILE = "processed_note_ids.json"
+# 处理过的笔记ID记录文件，默认放在 data/xhs/tmp 目录下
+PROCESSED_ID_FILE = os.path.join("data", "xhs", "tmp", "processed_note_ids.json")
 
 
 def load_processed_ids() -> set[str]:
     """读取已处理的 note_id 集合"""
+    if config.SAVE_DATA_OPTION == "db":
+        async def _load_from_db() -> set[str]:
+            pool = await aiomysql.create_pool(
+                host=config.RELATION_DB_HOST,
+                port=config.RELATION_DB_PORT,
+                user=config.RELATION_DB_USER,
+                password=config.RELATION_DB_PWD,
+                db=config.RELATION_DB_NAME,
+                autocommit=True,
+            )
+            async with pool.acquire() as conn:
+                async with conn.cursor(aiomysql.DictCursor) as cur:
+                    await cur.execute(
+                        "SELECT note_id FROM xhs_note WHERE is_analyzed=1"
+                    )
+                    rows = await cur.fetchall()
+            pool.close()
+            await pool.wait_closed()
+            return {row["note_id"] for row in rows}
+
+        return asyncio.run(_load_from_db())
+
     if os.path.exists(PROCESSED_ID_FILE):
         try:
             with open(PROCESSED_ID_FILE, "r", encoding="utf-8") as f:
@@ -72,6 +94,32 @@ def load_processed_ids() -> set[str]:
 
 def save_processed_ids(ids: set[str]) -> None:
     """保存已处理的 note_id 集合"""
+    if config.SAVE_DATA_OPTION == "db":
+        async def _update_db():
+            if not ids:
+                return
+            pool = await aiomysql.create_pool(
+                host=config.RELATION_DB_HOST,
+                port=config.RELATION_DB_PORT,
+                user=config.RELATION_DB_USER,
+                password=config.RELATION_DB_PWD,
+                db=config.RELATION_DB_NAME,
+                autocommit=True,
+            )
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    for nid in ids:
+                        await cur.execute(
+                            "UPDATE xhs_note SET is_analyzed=1 WHERE note_id=%s",
+                            (nid,),
+                        )
+            pool.close()
+            await pool.wait_closed()
+
+        asyncio.run(_update_db())
+        return
+
+    os.makedirs(os.path.dirname(PROCESSED_ID_FILE), exist_ok=True)
     with open(PROCESSED_ID_FILE, "w", encoding="utf-8") as f:
         json.dump(sorted(ids), f, ensure_ascii=False, indent=2)
 
@@ -486,7 +534,7 @@ async def load_notes_from_db() -> List[Dict[str, Any]]:
     )
     async with pool.acquire() as conn:
         async with conn.cursor(aiomysql.DictCursor) as cur:
-            await cur.execute("SELECT * FROM xhs_note")
+            await cur.execute("SELECT * FROM xhs_note WHERE IFNULL(is_analyzed,0)=0")
             rows = await cur.fetchall()
     pool.close()
     await pool.wait_closed()
@@ -534,8 +582,11 @@ def main() -> None:
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(qa_json, f, ensure_ascii=False, indent=2)
 
-    processed_ids.update(new_ids)
-    save_processed_ids(processed_ids)
+    if config.SAVE_DATA_OPTION == "db":
+        save_processed_ids(new_ids)
+    else:
+        processed_ids.update(new_ids)
+        save_processed_ids(processed_ids)
 
     if enable_db:
         asyncio.run(store_to_db(qa_json))

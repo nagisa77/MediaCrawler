@@ -358,6 +358,7 @@ CREATE TABLE `xhs_note`
     `tag_list`         longtext COMMENT '标签列表',
     `categories`       json NOT NULL COMMENT '分类列表',
     `note_url`         varchar(255) DEFAULT NULL COMMENT '笔记详情页的URL',
+    `is_analyzed`      tinyint(1) DEFAULT 0 COMMENT '是否已分析',
     PRIMARY KEY (`id`),
     KEY                `idx_xhs_note_note_id_209457` (`note_id`),
     KEY                `idx_xhs_note_time_eaa910` (`time`)
@@ -590,6 +591,7 @@ CREATE TABLE `zhihu_creator` (
 alter table douyin_aweme_comment add column `like_count` varchar(255) NOT NULL DEFAULT '0' COMMENT '点赞数';
 
 alter table xhs_note add column xsec_token varchar(50) default null comment '签名算法';
+alter table xhs_note add column is_analyzed tinyint(1) default 0 comment '是否已分析';
 alter table douyin_aweme_comment add column `pictures` varchar(500) NOT NULL DEFAULT '' COMMENT '评论图片列表';
 
 -- ----------------------------
