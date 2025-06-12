@@ -595,6 +595,9 @@ alter table xhs_note add column xsec_token varchar(50) default null comment '签
 alter table xhs_note add column is_analyzed tinyint(1) default 0 comment '是否已分析';
 alter table douyin_aweme_comment add column `pictures` varchar(500) NOT NULL DEFAULT '' COMMENT '评论图片列表';
 
+-- add column `platform` to interview_question
+alter table interview_question add column `platform` json NOT NULL COMMENT '来源平台列表';
+
 -- ----------------------------
 -- Table structure for interview_question
 -- ----------------------------
@@ -602,6 +605,7 @@ DROP TABLE IF EXISTS `interview_question`;
 CREATE TABLE `interview_question` (
     `id` int NOT NULL AUTO_INCREMENT COMMENT '自增ID',
     `question` varchar(512) NOT NULL COMMENT '标准化后的面试题',
+    `platform` json NOT NULL COMMENT '来源平台列表',
     `sources` longtext NOT NULL COMMENT '来源笔记列表 JSON',
     `categories` JSON NOT NULL COMMENT '分类列表',
     `add_ts` bigint NOT NULL COMMENT '添加时间戳',

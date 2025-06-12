@@ -55,13 +55,16 @@ CLUSTER_EPS = 0.4                      # DBSCAN 半径，可根据效果酌情�
 # 数据库中 question 字段允许的最大长度（schema 中为 varchar(512)）
 QUESTION_MAX_LEN = 512
 
-# 处理过的笔记ID记录文件，默认放在 data/xhs/tmp 目录下
-PROCESSED_ID_FILE = os.path.join("data", "xhs", "tmp", "processed_note_ids.json")
+# 处理过的笔记ID记录文件，按平台区分
+PROCESSED_ID_FILE = {
+    "xhs": os.path.join("data", "xhs", "tmp", "processed_note_ids.json"),
+    "zhihu": os.path.join("data", "zhihu", "tmp", "processed_content_ids.json"),
+}
 
 
-def load_processed_ids() -> set[str]:
+def load_processed_ids(platform: str) -> set[str]:
     """读取已处理的 note_id 集合"""
-    if config.SAVE_DATA_OPTION == "db":
+    if config.SAVE_DATA_OPTION == "db" and platform == "xhs":
         async def _load_from_db() -> set[str]:
             pool = await aiomysql.create_pool(
                 host=config.RELATION_DB_HOST,
@@ -83,18 +86,19 @@ def load_processed_ids() -> set[str]:
 
         return asyncio.run(_load_from_db())
 
-    if os.path.exists(PROCESSED_ID_FILE):
+    file_path = PROCESSED_ID_FILE.get(platform)
+    if file_path and os.path.exists(file_path):
         try:
-            with open(PROCESSED_ID_FILE, "r", encoding="utf-8") as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 return set(json.load(f))
         except Exception:
             return set()
     return set()
 
 
-def save_processed_ids(ids: set[str]) -> None:
+def save_processed_ids(ids: set[str], platform: str) -> None:
     """保存已处理的 note_id 集合"""
-    if config.SAVE_DATA_OPTION == "db":
+    if config.SAVE_DATA_OPTION == "db" and platform == "xhs":
         async def _update_db():
             if not ids:
                 return
@@ -119,8 +123,11 @@ def save_processed_ids(ids: set[str]) -> None:
         asyncio.run(_update_db())
         return
 
-    os.makedirs(os.path.dirname(PROCESSED_ID_FILE), exist_ok=True)
-    with open(PROCESSED_ID_FILE, "w", encoding="utf-8") as f:
+    file_path = PROCESSED_ID_FILE.get(platform)
+    if not file_path:
+        return
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    with open(file_path, "w", encoding="utf-8") as f:
         json.dump(sorted(ids), f, ensure_ascii=False, indent=2)
 
 # -------------------- 1. 预处理：提取候选问题 --------------------
@@ -299,7 +306,7 @@ def build_qa(notes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     qa_dict: Dict[str, Dict[str, Any]] = {}
 
     def make_empty_qa(q: str) -> Dict[str, Any]:
-        return {"question": q, "sources": [], "categories": []}
+        return {"question": q, "platform": [], "sources": [], "categories": []}
 
     for note in notes:
         refined_in_note = note_to_refined[note["note_id"]]
@@ -331,6 +338,7 @@ def build_qa(notes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "source_keyword": note.get("source_keyword", ""),
                 "xsec_token": note.get("xsec_token", ""),
                 "desc": note.get("desc", ""),
+                "platform": note.get("platform", ""),
             })
             # 合并分类
             note_categories = []
@@ -344,6 +352,9 @@ def build_qa(notes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 note_categories = raw_cat
             qa_dict[canon_q]["categories"] = list(
                 dict.fromkeys(qa_dict[canon_q]["categories"] + note_categories)
+            )
+            qa_dict[canon_q]["platform"] = list(
+                dict.fromkeys(qa_dict[canon_q]["platform"] + [note.get("platform", "")])
             )
 
     # 转成 list
@@ -369,7 +380,7 @@ async def store_to_db(qa_items: List[Dict[str, Any]]) -> None:
 
                 # 查询是否已有该问题
                 await cur.execute(
-                    "SELECT sources, categories FROM interview_question WHERE question=%s",
+                    "SELECT sources, categories, platform FROM interview_question WHERE question=%s",
                     (question,),
                 )
                 row = await cur.fetchone()
@@ -389,22 +400,29 @@ async def store_to_db(qa_items: List[Dict[str, Any]]) -> None:
                         merged[src.get("note_id")] = src
                     merged_sources = list(merged.values())
                     merged_categories = list(dict.fromkeys(existing_categories + item.get("categories", [])))
+                    try:
+                        existing_platform = json.loads(row.get("platform", "[]"))
+                    except Exception:
+                        existing_platform = []
+                    merged_platform = list(dict.fromkeys(existing_platform + item.get("platform", [])))
                     await cur.execute(
-                        "UPDATE interview_question SET sources=%s, categories=%s, add_ts=%s WHERE question=%s",
+                        "UPDATE interview_question SET sources=%s, categories=%s, platform=%s, add_ts=%s WHERE question=%s",
                         (
                             json.dumps(merged_sources, ensure_ascii=False),
                             json.dumps(merged_categories, ensure_ascii=False),
+                            json.dumps(merged_platform, ensure_ascii=False),
                             int(time.time() * 1000),
                             question,
                         ),
                     )
                 else:
                     await cur.execute(
-                        "INSERT INTO interview_question(question, sources, categories, add_ts) VALUES (%s, %s, %s, %s)",
+                        "INSERT INTO interview_question(question, sources, categories, platform, add_ts) VALUES (%s, %s, %s, %s, %s)",
                         (
                             question,
                             json.dumps(item["sources"], ensure_ascii=False),
                             json.dumps(item.get("categories", []), ensure_ascii=False),
+                            json.dumps(item.get("platform", []), ensure_ascii=False),
                             int(time.time() * 1000),
                         ),
                     )
@@ -425,7 +443,7 @@ async def merge_existing_questions() -> None:
 
     async with pool.acquire() as conn:
         async with conn.cursor(aiomysql.DictCursor) as cur:
-            await cur.execute("SELECT id, question, sources, categories FROM interview_question")
+            await cur.execute("SELECT id, question, sources, categories, platform FROM interview_question")
             rows = await cur.fetchall()
 
             if not rows:
@@ -444,6 +462,7 @@ async def merge_existing_questions() -> None:
             for canon_q, items in clusters.items():
                 merged: Dict[str, Any] = {}
                 merged_categories_set: set[str] = set()
+                merged_platform_set: set[str] = set()
                 rep_id = None
                 for row in items:
                     try:
@@ -457,6 +476,11 @@ async def merge_existing_questions() -> None:
                     for src in src_list:
                         merged[src.get("note_id")] = src
                     merged_categories_set.update(cat_list)
+                    try:
+                        plat_list = json.loads(row.get("platform", "[]"))
+                    except Exception:
+                        plat_list = []
+                    merged_platform_set.update(plat_list)
                     if row["question"] == canon_q:
                         rep_id = row["id"]
 
@@ -469,10 +493,11 @@ async def merge_existing_questions() -> None:
 
                 merged_sources = list(merged.values())
                 await cur.execute(
-                    "UPDATE interview_question SET sources=%s, categories=%s, add_ts=%s WHERE id=%s",
+                    "UPDATE interview_question SET sources=%s, categories=%s, platform=%s, add_ts=%s WHERE id=%s",
                     (
                         json.dumps(merged_sources, ensure_ascii=False),
                         json.dumps(list(merged_categories_set), ensure_ascii=False),
+                        json.dumps(list(merged_platform_set), ensure_ascii=False),
                         int(time.time() * 1000),
                         rep_id,
                     ),
@@ -523,7 +548,7 @@ async def analyze_questions() -> None:
 
 
 async def load_notes_from_db() -> List[Dict[str, Any]]:
-    """从数据库加载待处理的笔记信息"""
+    """从数据库加载待处理的笔记信息，包含小红书和知乎"""
     pool = await aiomysql.create_pool(
         host=config.RELATION_DB_HOST,
         port=config.RELATION_DB_PORT,
@@ -535,7 +560,17 @@ async def load_notes_from_db() -> List[Dict[str, Any]]:
     async with pool.acquire() as conn:
         async with conn.cursor(aiomysql.DictCursor) as cur:
             await cur.execute("SELECT * FROM xhs_note WHERE IFNULL(is_analyzed,0)=0")
-            rows = await cur.fetchall()
+            xhs_rows = await cur.fetchall()
+            for r in xhs_rows:
+                r["platform"] = "xhs"
+            await cur.execute("SELECT * FROM zhihu_content")
+            zhihu_rows = await cur.fetchall()
+            for r in zhihu_rows:
+                r["note_id"] = r.get("content_id")
+                if not r.get("desc"):
+                    r["desc"] = r.get("content_text", "")
+                r["platform"] = "zhihu"
+            rows = xhs_rows + zhihu_rows
     pool.close()
     await pool.wait_closed()
     return list(rows)
@@ -562,14 +597,22 @@ def main() -> None:
             if not isinstance(notes, list):
                 raise ValueError("输入 JSON 须为数组！")
 
-    processed_ids = load_processed_ids()
+    processed_ids_xhs = load_processed_ids("xhs")
+    processed_ids_zhihu = load_processed_ids("zhihu")
     unique_notes = []
-    new_ids = set()
+    new_ids_xhs = set()
+    new_ids_zhihu = set()
     for note in notes:
         nid = note.get("note_id")
-        if not nid or nid in processed_ids or nid in new_ids:
-            continue
-        new_ids.add(nid)
+        platform = note.get("platform", "xhs")
+        if platform == "xhs":
+            if not nid or nid in processed_ids_xhs or nid in new_ids_xhs:
+                continue
+            new_ids_xhs.add(nid)
+        else:
+            if not nid or nid in processed_ids_zhihu or nid in new_ids_zhihu:
+                continue
+            new_ids_zhihu.add(nid)
         unique_notes.append(note)
 
     # if not unique_notes:
@@ -583,10 +626,13 @@ def main() -> None:
             json.dump(qa_json, f, ensure_ascii=False, indent=2)
 
     if config.SAVE_DATA_OPTION == "db":
-        save_processed_ids(new_ids)
+        save_processed_ids(new_ids_xhs, "xhs")
+        save_processed_ids(new_ids_zhihu, "zhihu")
     else:
-        processed_ids.update(new_ids)
-        save_processed_ids(processed_ids)
+        processed_ids_xhs.update(new_ids_xhs)
+        processed_ids_zhihu.update(new_ids_zhihu)
+        save_processed_ids(processed_ids_xhs, "xhs")
+        save_processed_ids(processed_ids_zhihu, "zhihu")
 
     if enable_db:
         asyncio.run(store_to_db(qa_json))
