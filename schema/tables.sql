@@ -529,6 +529,7 @@ CREATE TABLE `zhihu_content` (
     `user_nickname` varchar(64) NOT NULL COMMENT '用户昵称',
     `user_avatar` varchar(255) NOT NULL COMMENT '用户头像地址',
     `user_url_token` varchar(255) NOT NULL COMMENT '用户url_token',
+    `categories` json NOT NULL COMMENT '分类列表',
     `add_ts` bigint NOT NULL COMMENT '记录添加时间戳',
     `last_modify_ts` bigint NOT NULL COMMENT '记录最后修改时间戳',
     PRIMARY KEY (`id`),

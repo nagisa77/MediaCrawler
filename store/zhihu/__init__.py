@@ -11,6 +11,7 @@
 
 # -*- coding: utf-8 -*-
 from typing import List
+import json
 
 import config
 from base.base_crawler import AbstractStore
@@ -62,7 +63,10 @@ async def update_zhihu_content(content_item: ZhihuContent):
     """
     content_item.source_keyword = source_keyword_var.get()
     local_db_item = content_item.model_dump()
-    local_db_item.update({"last_modify_ts": utils.get_current_timestamp()})
+    local_db_item.update({
+        "last_modify_ts": utils.get_current_timestamp(),
+        "categories": json.dumps(config.CATEGORIES, ensure_ascii=False),
+    })
     utils.logger.info(f"[store.zhihu.update_zhihu_content] zhihu content: {local_db_item}")
     await ZhihuStoreFactory.create_store().store_content(local_db_item)
 
