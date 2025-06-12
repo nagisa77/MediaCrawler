@@ -32,6 +32,7 @@ class ZhihuContent(BaseModel):
     comment_count: int = Field(default=0, description="评论数量")
     source_keyword: str = Field(default="", description="来源关键词")
     categories: list[str] = Field(default_factory=list, description="分类列表")
+    is_analyzed: int = Field(default=0, description="是否已分析")
 
     user_id: str = Field(default="", description="用户ID")
     user_link: str = Field(default="", description="用户主页链接")

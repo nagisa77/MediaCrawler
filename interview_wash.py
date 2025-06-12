@@ -69,7 +69,7 @@ def get_record_id(item: Dict[str, Any]) -> str:
 
 def load_processed_ids(platform: str) -> set[str]:
     """读取已处理的 note_id 集合"""
-    if config.SAVE_DATA_OPTION == "db" and platform == "xhs":
+    if config.SAVE_DATA_OPTION == "db" and platform in ("xhs", "zhihu"):
         async def _load_from_db() -> set[str]:
             pool = await aiomysql.create_pool(
                 host=config.RELATION_DB_HOST,
@@ -81,13 +81,20 @@ def load_processed_ids(platform: str) -> set[str]:
             )
             async with pool.acquire() as conn:
                 async with conn.cursor(aiomysql.DictCursor) as cur:
-                    await cur.execute(
-                        "SELECT note_id FROM xhs_note WHERE is_analyzed=1"
-                    )
+                    if platform == "xhs":
+                        await cur.execute(
+                            "SELECT note_id FROM xhs_note WHERE is_analyzed=1"
+                        )
+                        field = "note_id"
+                    else:
+                        await cur.execute(
+                            "SELECT content_id FROM zhihu_content WHERE is_analyzed=1"
+                        )
+                        field = "content_id"
                     rows = await cur.fetchall()
             pool.close()
             await pool.wait_closed()
-            return {row["note_id"] for row in rows}
+            return {row[field] for row in rows}
 
         return asyncio.run(_load_from_db())
 
@@ -103,7 +110,7 @@ def load_processed_ids(platform: str) -> set[str]:
 
 def save_processed_ids(ids: set[str], platform: str) -> None:
     """保存已处理的 note_id 集合"""
-    if config.SAVE_DATA_OPTION == "db" and platform == "xhs":
+    if config.SAVE_DATA_OPTION == "db" and platform in ("xhs", "zhihu"):
         async def _update_db():
             if not ids:
                 return
@@ -118,10 +125,16 @@ def save_processed_ids(ids: set[str], platform: str) -> None:
             async with pool.acquire() as conn:
                 async with conn.cursor() as cur:
                     for nid in ids:
-                        await cur.execute(
-                            "UPDATE xhs_note SET is_analyzed=1 WHERE note_id=%s",
-                            (nid,),
-                        )
+                        if platform == "xhs":
+                            await cur.execute(
+                                "UPDATE xhs_note SET is_analyzed=1 WHERE note_id=%s",
+                                (nid,),
+                            )
+                        else:
+                            await cur.execute(
+                                "UPDATE zhihu_content SET is_analyzed=1 WHERE content_id=%s",
+                                (nid,),
+                            )
             pool.close()
             await pool.wait_closed()
 
@@ -598,7 +611,7 @@ async def load_notes_from_db() -> List[Dict[str, Any]]:
             for r in xhs_rows:
                 r["platform"] = "xhs"
 
-            await cur.execute("SELECT * FROM zhihu_content")
+            await cur.execute("SELECT * FROM zhihu_content WHERE IFNULL(is_analyzed,0)=0")
             zhihu_rows = await cur.fetchall()
             for r in zhihu_rows:
                 r["platform"] = "zhihu"

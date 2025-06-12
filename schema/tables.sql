@@ -532,6 +532,7 @@ CREATE TABLE `zhihu_content` (
     `categories` json NOT NULL COMMENT '分类列表',
     `add_ts` bigint NOT NULL COMMENT '记录添加时间戳',
     `last_modify_ts` bigint NOT NULL COMMENT '记录最后修改时间戳',
+    `is_analyzed` tinyint(1) DEFAULT 0 COMMENT '是否已分析',
     PRIMARY KEY (`id`),
     KEY `idx_zhihu_content_content_id` (`content_id`),
     KEY `idx_zhihu_content_created_time` (`created_time`)
@@ -593,6 +594,7 @@ alter table douyin_aweme_comment add column `like_count` varchar(255) NOT NULL D
 
 alter table xhs_note add column xsec_token varchar(50) default null comment '签名算法';
 alter table xhs_note add column is_analyzed tinyint(1) default 0 comment '是否已分析';
+alter table zhihu_content add column is_analyzed tinyint(1) default 0 comment '是否已分析';
 alter table douyin_aweme_comment add column `pictures` varchar(500) NOT NULL DEFAULT '' COMMENT '评论图片列表';
 
 -- add column `platform` to interview_question
