@@ -62,6 +62,11 @@ PROCESSED_ID_FILE = {
 }
 
 
+def get_record_id(item: Dict[str, Any]) -> str:
+    """统一获取笔记或内容记录的唯一 ID"""
+    return item.get("note_id") or item.get("content_id") or ""
+
+
 def load_processed_ids(platform: str) -> set[str]:
     """读取已处理的 note_id 集合"""
     if config.SAVE_DATA_OPTION == "db" and platform == "xhs":
@@ -281,9 +286,12 @@ def build_qa(notes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     # 1) 收集所有候选
     note_to_candidates: Dict[str, List[str]] = {}
     for note in notes:
+        nid = get_record_id(note)
+        if not nid:
+            continue
         desc = note.get("desc", "")
         cands = extract_candidates(desc)
-        note_to_candidates[note["note_id"]] = cands
+        note_to_candidates[nid] = cands
 
     # 2) 精炼
     note_to_refined: Dict[str, List[str]] = {}
@@ -309,37 +317,63 @@ def build_qa(notes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return {"question": q, "platform": [], "sources": [], "categories": []}
 
     for note in notes:
-        refined_in_note = note_to_refined[note["note_id"]]
+        nid = get_record_id(note)
+        if not nid:
+            continue
+        refined_in_note = note_to_refined.get(nid, [])
         for q in refined_in_note:
             canon_q = canon_map[q]  # 该问题所属的canonical
             if canon_q not in qa_dict:
                 qa_dict[canon_q] = make_empty_qa(canon_q)
-            existing_ids = {src["note_id"] for src in qa_dict[canon_q]["sources"]}
-            if note["note_id"] in existing_ids:
+            existing_ids = {get_record_id(src) for src in qa_dict[canon_q]["sources"]}
+            if nid in existing_ids:
                 continue
-            qa_dict[canon_q]["sources"].append({
-                "note_id": note["note_id"],
-                "type": note.get("type", ""),
-                "video_url": note.get("video_url", ""),
-                "time": note.get("time", 0),
-                "last_update_time": note.get("last_update_time", 0),
-                "user_id": note.get("user_id", ""),
-                "nickname": note.get("nickname", ""),
-                "avatar": note.get("avatar", ""),
-                "liked_count": note.get("liked_count", ""),
-                "collected_count": note.get("collected_count", ""),
-                "comment_count": note.get("comment_count", ""),
-                "share_count": note.get("share_count", ""),
-                "ip_location": note.get("ip_location", ""),
-                "image_list": note.get("image_list", ""),
-                "tag_list": note.get("tag_list", ""),
-                "last_modify_ts": note.get("last_modify_ts", 0),
-                "note_url": note.get("note_url", ""),
-                "source_keyword": note.get("source_keyword", ""),
-                "xsec_token": note.get("xsec_token", ""),
-                "desc": note.get("desc", ""),
-                "platform": note.get("platform", ""),
-            })
+            if note.get("platform") == "zhihu":
+                qa_dict[canon_q]["sources"].append({
+                    "content_id": note.get("content_id", ""),
+                    "content_type": note.get("content_type", ""),
+                    "content_text": note.get("content_text", ""),
+                    "content_url": note.get("content_url", ""),
+                    "question_id": note.get("question_id", ""),
+                    "title": note.get("title", ""),
+                    "desc": note.get("desc", ""),
+                    "created_time": note.get("created_time", ""),
+                    "updated_time": note.get("updated_time", ""),
+                    "voteup_count": note.get("voteup_count", 0),
+                    "comment_count": note.get("comment_count", 0),
+                    "source_keyword": note.get("source_keyword", ""),
+                    "user_id": note.get("user_id", ""),
+                    "user_link": note.get("user_link", ""),
+                    "user_nickname": note.get("user_nickname", ""),
+                    "user_avatar": note.get("user_avatar", ""),
+                    "user_url_token": note.get("user_url_token", ""),
+                    "last_modify_ts": note.get("last_modify_ts", 0),
+                    "platform": note.get("platform", ""),
+                })
+            else:
+                qa_dict[canon_q]["sources"].append({
+                    "note_id": note.get("note_id", ""),
+                    "type": note.get("type", ""),
+                    "video_url": note.get("video_url", ""),
+                    "time": note.get("time", 0),
+                    "last_update_time": note.get("last_update_time", 0),
+                    "user_id": note.get("user_id", ""),
+                    "nickname": note.get("nickname", ""),
+                    "avatar": note.get("avatar", ""),
+                    "liked_count": note.get("liked_count", ""),
+                    "collected_count": note.get("collected_count", ""),
+                    "comment_count": note.get("comment_count", ""),
+                    "share_count": note.get("share_count", ""),
+                    "ip_location": note.get("ip_location", ""),
+                    "image_list": note.get("image_list", ""),
+                    "tag_list": note.get("tag_list", ""),
+                    "last_modify_ts": note.get("last_modify_ts", 0),
+                    "note_url": note.get("note_url", ""),
+                    "source_keyword": note.get("source_keyword", ""),
+                    "xsec_token": note.get("xsec_token", ""),
+                    "desc": note.get("desc", ""),
+                    "platform": note.get("platform", ""),
+                })
             # 合并分类
             note_categories = []
             raw_cat = note.get("categories", [])
@@ -394,10 +428,10 @@ async def store_to_db(qa_items: List[Dict[str, Any]]) -> None:
                         existing_categories = json.loads(row.get("categories", "[]"))
                     except Exception:
                         existing_categories = []
-                    # 按 note_id 去重合并新旧来源
-                    merged = {src.get("note_id"): src for src in existing_sources}
+                    # 按来源ID去重合并新旧来源
+                    merged = {get_record_id(src): src for src in existing_sources}
                     for src in item["sources"]:
-                        merged[src.get("note_id")] = src
+                        merged[get_record_id(src)] = src
                     merged_sources = list(merged.values())
                     merged_categories = list(dict.fromkeys(existing_categories + item.get("categories", [])))
                     try:
@@ -474,7 +508,7 @@ async def merge_existing_questions() -> None:
                     except Exception:
                         cat_list = []
                     for src in src_list:
-                        merged[src.get("note_id")] = src
+                        merged[get_record_id(src)] = src
                     merged_categories_set.update(cat_list)
                     try:
                         plat_list = json.loads(row.get("platform", "[]"))
@@ -563,13 +597,12 @@ async def load_notes_from_db() -> List[Dict[str, Any]]:
             xhs_rows = await cur.fetchall()
             for r in xhs_rows:
                 r["platform"] = "xhs"
+
             await cur.execute("SELECT * FROM zhihu_content")
             zhihu_rows = await cur.fetchall()
             for r in zhihu_rows:
-                r["note_id"] = r.get("content_id")
-                if not r.get("desc"):
-                    r["desc"] = r.get("content_text", "")
                 r["platform"] = "zhihu"
+
             rows = xhs_rows + zhihu_rows
     pool.close()
     await pool.wait_closed()
@@ -603,8 +636,8 @@ def main() -> None:
     new_ids_xhs = set()
     new_ids_zhihu = set()
     for note in notes:
-        nid = note.get("note_id")
         platform = note.get("platform", "xhs")
+        nid = get_record_id(note)
         if platform == "xhs":
             if not nid or nid in processed_ids_xhs or nid in new_ids_xhs:
                 continue
