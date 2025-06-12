@@ -56,7 +56,7 @@ CLUSTER_EPS = 0.4                      # DBSCAN 半径，可根据效果酌情�
 QUESTION_MAX_LEN = 512
 
 # 处理过的笔记ID记录文件
-PROCESSED_ID_FILE = "processed_note_ids.json"
+PROCESSED_ID_FILE = os.path.join("data", "xhs", "tmp", "processed_note_ids.json")
 
 
 def load_processed_ids() -> set[str]:
@@ -72,6 +72,7 @@ def load_processed_ids() -> set[str]:
 
 def save_processed_ids(ids: set[str]) -> None:
     """保存已处理的 note_id 集合"""
+    os.makedirs(os.path.dirname(PROCESSED_ID_FILE), exist_ok=True)
     with open(PROCESSED_ID_FILE, "w", encoding="utf-8") as f:
         json.dump(sorted(ids), f, ensure_ascii=False, indent=2)
 
@@ -514,7 +515,10 @@ def main() -> None:
             if not isinstance(notes, list):
                 raise ValueError("输入 JSON 须为数组！")
 
-    processed_ids = load_processed_ids()
+    if config.SAVE_DATA_OPTION == "db":
+        processed_ids: set[str] = set()
+    else:
+        processed_ids = load_processed_ids()
     unique_notes = []
     new_ids = set()
     for note in notes:
@@ -534,8 +538,9 @@ def main() -> None:
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(qa_json, f, ensure_ascii=False, indent=2)
 
-    processed_ids.update(new_ids)
-    save_processed_ids(processed_ids)
+    if config.SAVE_DATA_OPTION != "db":
+        processed_ids.update(new_ids)
+        save_processed_ids(processed_ids)
 
     if enable_db:
         asyncio.run(store_to_db(qa_json))
