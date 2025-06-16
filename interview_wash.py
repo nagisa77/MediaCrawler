@@ -176,10 +176,17 @@ def normalize(text: str) -> str:
 
 def extract_candidates(desc: str) -> List[str]:
     """从笔记描述中提取所有可能问题的候选句子。"""
+
+    print("【DEBUG】原始笔记描述：", desc)
     desc_norm = normalize(desc)
+
+    print("【DEBUG】标准化后的笔记描述：", desc_norm)
     # 用更宽松的正则搜索所有包含问号的短语
     cands = [m.group(1).strip() + "?" for m in _QUESTION_CANDIDATE_RE.finditer(desc_norm)]
     # 去重
+
+    print("【DEBUG】提取的候选问题：", cands)
+
     return list(dict.fromkeys(cands))
 
 # -------------------- 2. 句子精炼 (Chat GPT) --------------------
@@ -213,6 +220,11 @@ def refine_questions(candidates: List[str]) -> List[str]:
         ],
         temperature=0,
     )
+    # 记录用户输入和GPT返回内容，便于调试
+    print("【DEBUG】发送给GPT的内容：")
+    print(user_text)
+    print("【DEBUG】GPT返回内容：")
+    print(resp.choices[0].message.content)
     # 拆分 GPT 返回
     lines = resp.choices[0].message.content.splitlines()
     # 只取带 "Q:" 的行
@@ -302,7 +314,12 @@ def build_qa(notes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         nid = get_record_id(note)
         if not nid:
             continue
-        desc = note.get("desc", "")
+        if note.get("platform") == "zhihu":
+            desc = note.get("content_text", "")
+        elif note.get("platform") == "xhs":
+            desc = note.get("desc", "")
+        else:
+            continue
         cands = extract_candidates(desc)
         note_to_candidates[nid] = cands
 
@@ -363,7 +380,7 @@ def build_qa(notes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                     "last_modify_ts": note.get("last_modify_ts", 0),
                     "platform": note.get("platform", ""),
                 })
-            else:
+            elif note.get("platform") == "xhs":
                 qa_dict[canon_q]["sources"].append({
                     "note_id": note.get("note_id", ""),
                     "type": note.get("type", ""),
@@ -616,7 +633,10 @@ async def load_notes_from_db() -> List[Dict[str, Any]]:
             for r in zhihu_rows:
                 r["platform"] = "zhihu"
 
-            rows = xhs_rows + zhihu_rows
+            # 确保 xhs_rows 和 zhihu_rows 都是列表，即使为空也不会出错
+            rows = list(xhs_rows) if xhs_rows else []
+            if zhihu_rows:
+                rows += list(zhihu_rows)
     pool.close()
     await pool.wait_closed()
     return list(rows)
