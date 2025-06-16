@@ -17,6 +17,7 @@ xhs_interview_cleaner.py
 from __future__ import annotations
 
 import json
+import html
 import os
 import re
 import sys
@@ -149,45 +150,58 @@ def save_processed_ids(ids: set[str], platform: str) -> None:
         json.dump(sorted(ids), f, ensure_ascii=False, indent=2)
 
 # -------------------- 1. 预处理：提取候选问题 --------------------
-r"""
-原先的正则 _QUESTION_CANDIDATE_RE 要求：
-  (?:^|[\n\r])        # 行首或换行
-  (?:[0-9]{0,2}[️⃣①②③④⑤⑥⑦⑧⑨]?)  # 序号
-  ([^?？\n\r]{4,60})  # 4~60个非问号字符
-  [?？]
-限制性太强，很多带问号的句子可能无法匹配。
-
-改为更宽松的：
-  ([\S ]{4,100})[?？]
-表示至少4个非换行字符（包括空格）+ 问号，最多100，防止过长无意义。
-可根据实际情况继续微调。
-"""
-_QUESTION_CANDIDATE_RE = re.compile(
-    r"([\S ]{4,100})[?？]"
+_SENTENCE_SPLIT_RE = re.compile(
+    r"[。；;…\n\r]+|(?<=\d)[\)\.]|[\d]+\s*[、\.]"  # 中文句号/分号/换行/数字.) / 1. 2、 等
 )
 
+# 出现这些关键词即视为询问句（不要求问号）
+_CN_WH_WORDS = ("什么", "如何", "为什么", "多少", "怎么", "哪", "能否", "是否", "原理", "流程", "区别", "优缺点")
+_EN_WH_WORDS = ("what", "why", "how", "when", "which", "where", "can", "could", "should")
+_PREFIX_HINTS = ("问", "请", "说说", "讲讲", "介绍", "描述")
+
+def is_question_like(seg: str) -> bool:
+    s = seg.strip()
+    if s.endswith(("?", "？")):
+        return True
+    if s.startswith(_PREFIX_HINTS):
+        return True
+    if any(w in s.lower() for w in _EN_WH_WORDS) or any(w in s for w in _CN_WH_WORDS):
+        return True
+    return False
+
 def normalize(text: str) -> str:
-    """统一全角半角并过滤掉一些特殊符号。"""
-    text = unicodedata.normalize("NFKC", text)  # 转换全角到半角等
-    # 你可以根据需要删掉一些不想要的符号，这里只是示例
-    # 保留汉字、字母、数字、常见标点等
-    text = re.sub(r"[^\u4e00-\u9fa5A-Za-z0-9#@/\.\+:\-\(\)（）？? ]+", "", text)
+    text = html.unescape(text)               # &gt; → >
+    text = unicodedata.normalize("NFKC", text)
+    # 不再删除换行，让后续“行粒度”解析更容易
+    text = re.sub(r"[^\u4e00-\u9fa5A-Za-z0-9#@/\.\+:\-\(\)（）？? \n\r]", "", text)
     return text
 
-def extract_candidates(desc: str) -> List[str]:
-    """从笔记描述中提取所有可能问题的候选句子。"""
-
-    print("【DEBUG】原始笔记描述：", desc)
+def extract_candidates(desc: str) -> list[str]:
     desc_norm = normalize(desc)
 
     print("【DEBUG】标准化后的笔记描述：", desc_norm)
-    # 用更宽松的正则搜索所有包含问号的短语
-    cands = [m.group(1).strip() + "?" for m in _QUESTION_CANDIDATE_RE.finditer(desc_norm)]
-    # 去重
+
+    # ① 句子/行级切分
+    frags = _SENTENCE_SPLIT_RE.split(desc_norm)
+
+    # ② 去掉空白、去重
+    uniq = []
+    for f in frags:
+        f = f.strip()
+        if 4 <= len(f) <= 120 and f not in uniq:
+            uniq.append(f)
+
+    # ③ 问句判定
+    cands = []
+    for seg in uniq:
+        if is_question_like(seg):
+            # 确保问号结尾，方便 GPT 识别
+            seg_q = seg if seg.endswith(("?", "？")) else seg + "?"
+            cands.append(seg_q)
 
     print("【DEBUG】提取的候选问题：", cands)
 
-    return list(dict.fromkeys(cands))
+    return cands
 
 # -------------------- 2. 句子精炼 (Chat GPT) --------------------
 """
