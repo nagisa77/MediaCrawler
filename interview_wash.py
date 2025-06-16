@@ -49,8 +49,8 @@ if not os.getenv("OPENAI_API_KEY"):
 client = OpenAI()  # 使用默认的 key / base_url / organization
 
 # -------------------- 配置 --------------------
-MODEL_CHAT = "gpt-3.5-turbo"           # 用于句子精炼
-MODEL_EMBED = "text-embedding-3-small" # 用于向量嵌入（1536维稀释版）
+MODEL_CHAT = "gpt-4o-mini"             # 用于句子精炼
+MODEL_EMBED = "text-embedding-3-large" # 用于向量嵌入（1536维稀释版）
 CLUSTER_EPS = 0.4                      # DBSCAN 半径，可根据效果酌情调整
 
 # 数据库中 question 字段允许的最大长度（schema 中为 varchar(512)）
@@ -215,7 +215,7 @@ _SYSTEM_PROMPT = (
     "- 你需要判断它是不是完整、可作为面试问题的句子。\n"
     "- 对于每个句子：如果它是一个清晰、可答的面试题，输出 `Q: <精炼题干>`；否则输出空行。\n"
     "- 题干需保持问句形式，并且语义完整、简洁。\n"
-    "- 题干不要有题目标号，不要有题干序号 \n"
+    "- 题干不要有题目标号，不要有题干序号, `Q: `之后就接一个疑问句即可 \n"
     "只输出处理结果，不要添加额外解释。\n"
 )
 
